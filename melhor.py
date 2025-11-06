@@ -12,6 +12,12 @@ from sklearn.feature_extraction.text import CountVectorizer
 from nltk.probability import FreqDist
 from collections import Counter
 import numpy as np
+import re
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import MultinomialNB
+from imblearn.over_sampling import SMOTE
+from imblearn.under_sampling import RandomUnderSampler
+from imblearn.pipeline import Pipeline
 
 # Lista de stopwords em português
 stop_words = set(stopwords.words('portuguese'))
@@ -33,6 +39,11 @@ y = df.iloc[:, -1]
 # Divisão dos dados em treino e teste
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.3, random_state = 42, stratify = y)
 
+print (X_train.shape)
+print (X_test.shape)
+print (y_train.shape)
+print (y_test.shape)
+
 ## Criação dos dataframes de Treino ##
 train_df = X_train.copy()
 train_df["classe"] = y_train.values
@@ -46,6 +57,9 @@ test_df["classe"] = y_test.values
 
 # Contagem de amostras por classe nos dados de teste
 print(f"\nDados de teste:", test_df["classe"].value_counts())
+
+print (train_df.shape)
+print (test_df.shape)
 
 # -- FUNÇÃO DE LIMPEZA E TOKENIZAÇÃO -- #
 def limpar_tokenizar(texto):
@@ -194,23 +208,23 @@ def contar_palavras_exclusivas(tokens):
 
     for token in tokens:
         if token in so_vies_pos:
-            contagens["so_vies_pos"] += 1
+            contagens["so_vies_pos"] = 1
         if token in so_vies_neg:
-            contagens["so_vies_neg"] += 1
+            contagens["so_vies_neg"] = 1
         if token in so_vies_neu:
-            contagens["so_vies_neu"] += 1
+            contagens["so_vies_neu"] = 1
         if token in so_facto_pos:
-            contagens["so_facto_pos"] += 1
+            contagens["so_facto_pos"] = 1
         if token in so_facto_neg:
-            contagens["so_facto_neg"] += 1
+            contagens["so_facto_neg"] = 1
         if token in so_facto_neu:
-            contagens["so_facto_neu"] += 1
+            contagens["so_facto_neu"] = 1
         if token in so_citacao_pos:
-            contagens["so_citacao_pos"] += 1
+            contagens["so_citacao_pos"] = 1
         if token in so_citacao_neg:
-            contagens["so_citacao_neg"] += 1
+            contagens["so_citacao_neg"] = 1
         if token in so_citacao_neu:
-            contagens["so_citacao_neu"] += 1
+            contagens["so_citacao_neu"] = 1
 
     return pd.Series(contagens)
 
@@ -261,20 +275,28 @@ def contar_adjetivos_adverbios_freq (tokens):
      
     for token in tokens:
         if token in top_adjetivos_citacao:
-            contagens ["adj_citacao"] += 1
+            contagens ["adj_citacao"] = 1
         if token in top_adjetivos_facto:
-            contagens ["adj_facto"] += 1
+            contagens ["adj_facto"] = 1
         if token in top_adjetivos_vies:
-            contagens ["adj_vies"] += 1
+            contagens ["adj_vies"] = 1
         if token in top_adverbios_citacao:
-            contagens ["adv_citacao"] += 1
+            contagens ["adv_citacao"] = 1
         if token in top_adverbios_facto:
-            contagens ["adv_facto"] += 1
+            contagens ["adv_facto"] = 1
         if token in top_adverbios_vies:
-            contagens ["adv_vies"] += 1
+            contagens ["adv_vies"] = 1
     
     return pd.Series (contagens)
-        
+
+# -- PRIMEIRA LETRA MAIÚSCULA DEPOIS DAS ASPAS -- #
+def letras_maiusculas (sentence):
+    return len(re.findall(r'"[A-ZÁÉÍÓÚÃÕÂÊÔÇ]', sentence))
+
+# -- TEM ASPAS -- #
+def contar_aspas(sentence):
+    return len(re.findall(r'"', sentence))
+
 # Aplicar as funções nos Dataframas
 train_counts_exclusivas = train_df["tokens"].apply(contar_palavras_exclusivas)
 test_counts_exclusivas = test_df["tokens"].apply(contar_palavras_exclusivas)
@@ -292,8 +314,16 @@ colunas = [
     "so_facto_pos", "so_facto_neg", "so_facto_neu",
     "so_citacao_pos", "so_citacao_neg", "so_citacao_neu",
     "adj_vies", "adj_facto", "adj_citacao", "adv_vies",
-    "adv_facto", "adv_citacao"
+    "adv_facto", "adv_citacao", "num_aspas"
 ]
+
+train_df["num_aspas"] = train_df["sentences"].apply(
+    lambda s: contar_aspas(s)
+)
+
+test_df["num_aspas"] = test_df["sentences"].apply(
+    lambda s: contar_aspas(s) 
+)
 
 X_train_num = train_df[colunas]
 y_train_num = train_df["classe"]
@@ -304,12 +334,33 @@ y_test_num = test_df["classe"]
 # Para não existirem valores nulos
 X_train_num = X_train_num.fillna(0)
 X_test_num = X_test_num.fillna(0)
+print (y_test_num.shape)
+print (X_train_num.shape)
+
+# Definir o número alvo de amostras por classe
+target_n = 1200
+
+# Primeiro, aplicar SMOTE para as classes com menos de 1200
+smote = SMOTE(sampling_strategy = {-1: target_n, 1: target_n}, random_state = 42)
+
+# Depois, aplicar undersampling para as classes com mais de 1200
+under = RandomUnderSampler(sampling_strategy = {0: target_n}, random_state = 42)
+
+# Combinar os dois passos num pipeline
+pipeline = Pipeline(steps = [('smote', smote), ('under', under)])
+
+# Aplicar o pipeline
+X_train_res, y_train_res = pipeline.fit_resample(X_train_num, y_train_num)
+
+# Verificar o resultado
+print("\nDistribuição das classes após SMOTE + undersampling:")
+print(pd.Series(y_train_res).value_counts())
 
 ## -- MODELO KNN -- ##
 def KNN_modelo (n):
 
     KNN = KNeighborsClassifier (n_neighbors = n) 
-    KNN.fit (X_train_num, y_train)
+    KNN.fit (X_train_res, y_train_res)
 
     y_pred = KNN.predict (X_test_num)
     return y_pred
@@ -317,7 +368,7 @@ def KNN_modelo (n):
 y_pred_KNN = KNN_modelo (n = 5)
 
 print("-------- MODELO KNN --------")
-print("Accuracy:", accuracy_score(y_test, y_pred_KNN))
+print("Accuracy:", accuracy_score(y_test_num, y_pred_KNN))
 print("\nRelatório de classificação:")
 print(classification_report(test_df ['classe'], y_pred_KNN, labels = [-1, 0, 1], target_names = ['Citação (-1)', 'Facto (0)', 'Viés (1)']))
 print()
@@ -334,7 +385,7 @@ plt.show()
 ## -- MODELO KMEANS -- ##
 def kmeans (n):
     kmeans = KMeans (n_clusters = n, random_state = 42)
-    kmeans.fit (X_train_num)
+    kmeans.fit (X_train_res)
 
     y_pred = kmeans.predict (X_test_num)
     return y_pred
@@ -353,6 +404,56 @@ cm = confusion_matrix(test_df ['classe'], y_pred_kmeans)
 disp = ConfusionMatrixDisplay(confusion_matrix = cm, display_labels = [-1, 0, 1])
 disp.plot(cmap = plt.cm.Blues, values_format = 'd', text_kw = {'fontsize':16})  
 plt.title("Matriz de Confusão do Modelo K-Means", fontsize = 22)
+plt.xlabel("Classe Prevista", fontsize = 14)
+plt.ylabel("Classe Verdadeira", fontsize = 14)
+plt.show()
+
+## -- MODELO REGRESSÃO LOGÍSTICA -- ##
+def regressao_logistica ():
+    log_reg = LogisticRegression (random_state = 42)
+    log_reg.fit (X_train_res, y_train_res)
+
+    y_pred = log_reg.predict (X_test_num)
+    return y_pred
+
+y_pred_reglog = regressao_logistica ()
+
+print("-------- MODELO REGRESSÃO LOGÍSTICA --------")
+print("Accuracy:", accuracy_score(y_test, y_pred_reglog))
+print("\nRelatório de classificação:")
+print(classification_report(test_df ['classe'], y_pred_reglog, labels = [-1, 0, 1], target_names = ['Citação (-1)', 'Facto (0)', 'Viés (1)']))
+print()
+
+# MATRIZ DE CONFUSÃO DO MODELO REGRESSÃO LOGÍSTICA
+cm = confusion_matrix(test_df ['classe'], y_pred_reglog)
+disp = ConfusionMatrixDisplay(confusion_matrix = cm, display_labels = [-1, 0, 1])
+disp.plot(cmap = plt.cm.Blues, values_format = 'd', text_kw = {'fontsize':16})  
+plt.title("Matriz de Confusão do Modelo Regressão Logística", fontsize = 22)
+plt.xlabel("Classe Prevista", fontsize = 14)
+plt.ylabel("Classe Verdadeira", fontsize = 14)
+plt.show()
+
+## -- MODELO NAIVE BAYES-- ##
+def naive_bayes ():
+    nb = MultinomialNB()
+    nb.fit(X_train_res, y_train_res)
+
+    y_pred = nb.predict(X_test_num)
+    return y_pred
+
+y_pred_nb = naive_bayes()
+
+print("-------- MODELO NAIVE BAYES --------")
+print("Accuracy:", accuracy_score(y_test, y_pred_nb))
+print("\nRelatório de classificação:")
+print(classification_report(test_df ['classe'], y_pred_nb, labels = [-1, 0, 1], target_names = ['Citação (-1)', 'Facto (0)', 'Viés (1)']))
+print()
+
+# MATRIZ DE CONFUSÃO DO MODELO NAIVE BAYES
+cm = confusion_matrix(test_df ['classe'], y_pred_nb)
+disp = ConfusionMatrixDisplay(confusion_matrix = cm, display_labels = [-1, 0, 1])
+disp.plot(cmap = plt.cm.Blues, values_format = 'd', text_kw = {'fontsize':16})  
+plt.title("Matriz de Confusão do Modelo Naive Bayes", fontsize = 22)
 plt.xlabel("Classe Prevista", fontsize = 14)
 plt.ylabel("Classe Verdadeira", fontsize = 14)
 plt.show()
